@@ -2,7 +2,7 @@ Convolutional Recurrent Neural Network
 ======================================
 
 This software implements the Convolutional Recurrent Neural Network (CRNN) in pytorch.
-Origin software could be found in [crnn](https://github.com/bgshih/crnn)
+Origin software could be found in [crnn](https://github.com/bgshih/crnn)<br>
 项目来自：https://github.com/meijieru/crnn.pytorch
 
 ## CRNN
@@ -78,6 +78,8 @@ assert imgH % 16 == 0, 'imgH has to be a multiple of 16 图片高度必须为16�
 ```
 查看CRNN的网络结构<br>
 > python lib\models\crnn.py
+![alt text](image-1.png)
+
 
 卷积操作输出特征层大小为：26×1×512
 
@@ -86,9 +88,67 @@ assert imgH % 16 == 0, 'imgH has to be a multiple of 16 图片高度必须为16�
 
 将H,W维度合并，合并后的维度转换为输入到RNN的时间步长(time_step)，每一个序列长度为原始特征层的通道数；<br>
 **输入到LSTM中的特征图大小：**
-输入到LSTM的是一位的序列，序列长度为原始特征图的通道数512;<br>
+输入到LSTM的是一维的序列，<br>序列长度为原始特征图的通道数512;<br>
 一共输入了h×w=26个时间步长。
 
+序列是对于特征图按照列从左到右生成的，每一列包含512维的特征，输入到LSTM中的第i个特征序列是特征图第i列向量的连接。
+由于卷积操作和最大池化的平移不变性，在原图上某一区域对应的特征对应在卷积提取的特征图上仍体现在相同的区域。
+因此对于CNN提取的特征图，从左到右进行拆分，每一个特征序列对应在原图上仍是按照从左到右的顺序。
+![alt text](image-2.png)
+
+每一个时间步长输入的序列的神经元个数为512；LSTM隐藏层节点数量为256
+
+```python
+# LSTM类
+class BidirectionalLSTM(nn.Module):
+
+    def __init__(self, nIn, nHidden, nOut):
+        super(BidirectionalLSTM, self).__init__()
+
+        self.rnn = nn.LSTM(nIn, nHidden, bidirectional=True)     # nIn：输入神经元个数
+        self.embedding = nn.Linear(nHidden * 2, nOut)  # *2因为使用双向LSTM，两个方向隐层单元拼在一起
+
+    def forward(self, input):
+        # 经过RNN输出feature map特征结果
+        recurrent, _ = self.rnn(input)
+        T, b, h = recurrent.size()  # T:时间步长，b:batch size,h:hiden unit
+        t_rec = recurrent.view(T * b, h)# 512×batch_size, 256
+
+        output = self.embedding(t_rec)  # [T * b, nOut]
+        output = output.view(T, b, -1)
+
+        return output
+```
+```python
+self.rnn = nn.Sequential(
+            BidirectionalLSTM(512, nh, nh), # 输入的时间步长为512
+            BidirectionalLSTM(nh, nh, nclass))
+```
+
+第一次LSTM得到的特征层大小为[26×batch_size, 256],经过view得到[26，batch_size, 256]
+第一次LSTM得到的特征层大小为[26×batch_size, num_class],经过view得到[26，batch_size, num_class]
+
+每一个特征序列映射所属字符类别的概率值。
+
+## 转录层CTC
+将每一个特征向量预测的结果转换成标签序列的过程。但是由于不定长序列的对齐问题，可能出现一个字符被识别多次的情况，多个特征序列对应同一个标签结果，因此需要去除冗余机制。但是不能直接将重复的文本去除，可能出现原始文本中就包含次重复的情况。所以在**解码**过程中引入blank：
+
+- 在重复的字符之间增加一个空格'-';
+- 删除没有空格间隔的重复字符;
+- 再去掉字符中所有的'-';
+
+**编码**过程是通过神经网络来实现的，文本标签可以通过不同的字符组合路径得到。
+**CTC los损失值如何计算**
+
+p(l|y)=$\sum\limits_{π：B(π)}p(π|y)$
+
+对于一个标签，所有可能得到该标签的所有路径的概率分布。计算每条路径的概率为每一个时间步对应字符分数的乘积。CTC损失函数定义为概率的负最大似然函数，为了计算方便对函数取对数。
+
+## CRNN的预测过程如何实现
+- 在测试阶段对于输入图像缩放会导致识别率降低，CRNN需保持输入图像尺寸比例，但是图像高度必须统一为32，卷积特征图尺寸动态决定了输入到LSTM的时序长度（CNN输出的特征图宽度决定了输入到LSTM中的时间步长）；
+- 使用标砖的CNN网络提取特征；
+- 利用BLSTM将特征向量进行融合，已提取字符序列的上下文特征，得到每列特征的概率分布；
+- 通过CTC进行预测得到文本序列；
 
 Run demo
 --------

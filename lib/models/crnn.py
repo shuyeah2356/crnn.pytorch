@@ -102,7 +102,6 @@ class CRNN(nn.Module):
 
 
 if __name__ == '__main__':
-    #给模型注册钩子函数
 
     crnn = CRNN(32, 1, 37, 256)
     print(crnn)
